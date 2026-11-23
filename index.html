@@ -50,6 +50,7 @@
             border: 1px solid rgba(255, 255, 255, 0.08);
         }
 
+        /* Water Pump Motor Active & Idle Effects */
         .pump-active {
             color: #38bdf8;
             filter: drop-shadow(0 0 18px rgba(56, 189, 248, 0.9)) drop-shadow(0 0 32px rgba(14, 165, 233, 0.55));
@@ -109,7 +110,7 @@
 
             <div class="flex items-center gap-1.5 shrink-0">
                 <!-- Voice Toggle Button -->
-                <button id="voice-btn" onclick="toggleVoice()" title="បិទ/បើកសម្លេងខ្មែរ" class="px-2 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold transition active:scale-95 flex items-center gap-1">
+                <button id="voice-btn" onclick="toggleVoice()" title="បិទ/បើកសម្លេង Google ខ្មែរ" class="px-2 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold transition active:scale-95 flex items-center gap-1">
                     <i id="voice-icon" class="fa-solid fa-volume-high"></i>
                     <span id="voice-label">សំឡេង</span>
                 </button>
@@ -345,7 +346,7 @@ basic.forever(function () {
         let isSimulating = false;
         let pumpState = false;
         let voiceEnabled = true;
-        let iosAudioCtx = null;
+        let currentGoogleAudio = null;
         let uartBuffer = "";
         let simInterval = null;
 
@@ -354,11 +355,6 @@ basic.forever(function () {
             setInterval(updateClock, 1000);
             if ("speechSynthesis" in window) {
                 window.speechSynthesis.getVoices();
-                if (window.speechSynthesis.onvoiceschanged !== undefined) {
-                    window.speechSynthesis.onvoiceschanged = () => {
-                        window.speechSynthesis.getVoices();
-                    };
-                }
             }
         });
 
@@ -387,7 +383,7 @@ basic.forever(function () {
             if (msg.includes("TX")) div.className = "text-sky-300";
             else if (msg.includes("RX")) div.className = "text-emerald-300";
             else if (msg.includes("Error")) div.className = "text-rose-400";
-            else if (msg.includes("Voice") || msg.includes("iOS")) div.className = "text-indigo-300";
+            else if (msg.includes("Google TTS") || msg.includes("Voice")) div.className = "text-indigo-300";
             else div.className = "text-slate-400";
 
             div.innerText = `[${time}] ${msg}`;
@@ -399,103 +395,72 @@ basic.forever(function () {
             document.getElementById("log-box").innerHTML = '<div class="text-slate-500">[Log Cleared]</div>';
         }
 
-        // iOS AUDIO UNLOCK + ALERT TONE + KHMER TTS
-        function unlockIosAudio() {
-            try {
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                if (!iosAudioCtx) {
-                    iosAudioCtx = new AudioCtx();
-                }
-                if (iosAudioCtx.state === "suspended") {
-                    iosAudioCtx.resume();
-                }
-                const buf = iosAudioCtx.createBuffer(1, 1, 22050);
-                const src = iosAudioCtx.createBufferSource();
-                src.buffer = buf;
-                src.connect(iosAudioCtx.destination);
-                src.start(0);
-            } catch (e) {}
-        }
-
-        document.addEventListener("touchstart", unlockIosAudio, { passive: true });
-        document.addEventListener("click", unlockIosAudio, { passive: true });
-
+        // ALERT CHIME + GOOGLE TTS (KHMER tl=km)
         function playAlertTone(isOpen = true) {
             try {
-                unlockIosAudio();
-                if (!iosAudioCtx) return;
-
-                const osc = iosAudioCtx.createOscillator();
-                const gain = iosAudioCtx.createGain();
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                const ctx = new AudioCtx();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
 
                 osc.type = "sine";
-                const now = iosAudioCtx.currentTime;
+                const now = ctx.currentTime;
                 osc.frequency.setValueAtTime(isOpen ? 523.25 : 659.25, now);
                 osc.frequency.exponentialRampToValueAtTime(isOpen ? 783.99 : 392.00, now + 0.18);
 
-                gain.gain.setValueAtTime(0.35, now);
+                gain.gain.setValueAtTime(0.2, now);
                 gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
 
                 osc.connect(gain);
-                gain.connect(iosAudioCtx.destination);
+                gain.connect(ctx.destination);
 
                 osc.start(now);
                 osc.stop(now + 0.36);
-            } catch (e) {
-                addLog("iOS Tone Error: " + e.message);
-            }
-        }
-
-        function pickKhmerVoice() {
-            if (!("speechSynthesis" in window)) return null;
-            const voices = window.speechSynthesis.getVoices ? window.speechSynthesis.getVoices() : [];
-            if (!voices.length) return null;
-
-            const kmVoices = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith("km"));
-            const femaleKm = kmVoices.find(v => /female|woman|girl|ស្រី/i.test(v.name));
-            return femaleKm || kmVoices[0] || null;
+                setTimeout(() => ctx.close(), 500);
+            } catch (e) {}
         }
 
         function speakKhmer(text, isOpen = true) {
             if (!voiceEnabled) return;
 
-            unlockIosAudio();
-            playAlertTone(isOpen);
-
-            if (!("speechSynthesis" in window)) {
-                addLog(`iOS Alert: ${text}`);
-                return;
+            if (currentGoogleAudio) {
+                currentGoogleAudio.pause();
+                currentGoogleAudio.currentTime = 0;
+                currentGoogleAudio = null;
+            }
+            if ("speechSynthesis" in window) {
+                try { window.speechSynthesis.cancel(); } catch (e) {}
             }
 
-            try {
-                window.speechSynthesis.cancel();
-            } catch (e) {}
+            playAlertTone(isOpen);
 
+            const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=km&q=${encodeURIComponent(text)}`;
+            const audio = new Audio(googleTtsUrl);
+            audio.volume = 1.0;
+            currentGoogleAudio = audio;
+
+            audio.onplay = () => {
+                addLog(`Google TTS (km): "${text}"`);
+            };
+
+            audio.onerror = () => {
+                addLog(`Google TTS fallback -> Local TTS: "${text}"`);
+                speakLocalFallback(text);
+            };
+
+            audio.play().catch(() => {
+                addLog(`Google TTS blocked/offline -> Local TTS: "${text}"`);
+                speakLocalFallback(text);
+            });
+        }
+
+        function speakLocalFallback(text) {
+            if (!("speechSynthesis" in window)) return;
             const utterance = new SpeechSynthesisUtterance(text);
             utterance.lang = "km-KH";
             utterance.rate = 0.95;
             utterance.pitch = 1.15;
-            utterance.volume = 1.0;
-
-            const voice = pickKhmerVoice();
-            if (voice) {
-                utterance.voice = voice;
-                addLog(`iOS Voice (${voice.name}): "${text}"`);
-            } else {
-                addLog(`iOS Voice (km-KH): "${text}" (បើស្ងាត់ សូមទាញ Khmer Voice ក្នុង Settings iPhone)`);
-            }
-
-            utterance.onerror = (e) => {
-                addLog(`iOS TTS Error: ${e.error || "check Khmer voice in iOS Settings"}`);
-            };
-
-            setTimeout(() => {
-                try {
-                    window.speechSynthesis.speak(utterance);
-                } catch (err) {
-                    addLog("Speak Error: " + err.message);
-                }
-            }, 120);
+            window.speechSynthesis.speak(utterance);
         }
 
         function toggleVoice() {
@@ -508,6 +473,10 @@ basic.forever(function () {
                 label.innerText = "សំឡេង";
                 speakKhmer("ដំណើរការបើកប្រព័ន្ធទឹក", true);
             } else {
+                if (currentGoogleAudio) {
+                    currentGoogleAudio.pause();
+                    currentGoogleAudio = null;
+                }
                 if ("speechSynthesis" in window) {
                     try { window.speechSynthesis.cancel(); } catch (e) {}
                 }
@@ -641,7 +610,7 @@ basic.forever(function () {
             }
         }
 
-        // WATER PUMP MOTOR CONTROLLER + KHMER VOICE
+        // WATER PUMP MOTOR CONTROLLER + GOOGLE KHMER VOICE
         function togglePumpState() {
             setPumpDirect(!pumpState);
         }
