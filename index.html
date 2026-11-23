@@ -110,7 +110,7 @@
 
             <div class="flex items-center gap-1.5 shrink-0">
                 <!-- Voice Toggle Button -->
-                <button id="voice-btn" onclick="toggleVoice()" title="បិទ/បើកសម្លេង Google ខ្មែរ" class="px-2 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold transition active:scale-95 flex items-center gap-1">
+                <button id="voice-btn" onclick="toggleVoice()" title="បិទ/បើកសំឡេងជូនដំណឹង" class="px-2 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold transition active:scale-95 flex items-center gap-1">
                     <i id="voice-icon" class="fa-solid fa-volume-high"></i>
                     <span id="voice-label">សំឡេង</span>
                 </button>
@@ -383,7 +383,7 @@ basic.forever(function () {
             if (msg.includes("TX")) div.className = "text-sky-300";
             else if (msg.includes("RX")) div.className = "text-emerald-300";
             else if (msg.includes("Error")) div.className = "text-rose-400";
-            else if (msg.includes("Google TTS") || msg.includes("Voice")) div.className = "text-indigo-300";
+            else if (msg.includes("TTS") || msg.includes("Voice") || msg.includes("Chime")) div.className = "text-indigo-300";
             else div.className = "text-slate-400";
 
             div.innerText = `[${time}] ${msg}`;
@@ -395,7 +395,23 @@ basic.forever(function () {
             document.getElementById("log-box").innerHTML = '<div class="text-slate-500">[Log Cleared]</div>';
         }
 
-        // ALERT CHIME + GOOGLE TTS (KHMER tl=km)
+        function showVoiceBanner(msg) {
+            let banner = document.getElementById("voice-toast");
+            if (!banner) {
+                banner = document.createElement("div");
+                banner.id = "voice-toast";
+                banner.className = "fixed top-14 left-1/2 -translate-x-1/2 z-[100] px-3.5 py-1.5 rounded-full bg-indigo-600/95 text-white text-xs font-semibold shadow-lg border border-white/15 transition-opacity duration-300 pointer-events-none";
+                document.body.appendChild(banner);
+            }
+            banner.innerText = msg;
+            banner.style.opacity = "1";
+            clearTimeout(banner._timer);
+            banner._timer = setTimeout(() => {
+                banner.style.opacity = "0";
+            }, 2200);
+        }
+
+        // ALERT CHIME + KHMER VOICE / FALLBACK
         function playAlertTone(isOpen = true) {
             try {
                 const AudioCtx = window.AudioContext || window.webkitAudioContext;
@@ -433,34 +449,32 @@ basic.forever(function () {
             }
 
             playAlertTone(isOpen);
+            showVoiceBanner(text);
+
+            if ("speechSynthesis" in window) {
+                const voices = window.speechSynthesis.getVoices();
+                const khmerVoice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith("km"));
+                if (khmerVoice) {
+                    const utterance = new SpeechSynthesisUtterance(text);
+                    utterance.voice = khmerVoice;
+                    utterance.lang = khmerVoice.lang;
+                    utterance.rate = 0.95;
+                    window.speechSynthesis.speak(utterance);
+                    addLog(`Local km-KH TTS: "${text}"`);
+                    return;
+                }
+            }
 
             const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=km&q=${encodeURIComponent(text)}`;
             const audio = new Audio(googleTtsUrl);
             audio.volume = 1.0;
             currentGoogleAudio = audio;
 
-            audio.onplay = () => {
+            audio.play().then(() => {
                 addLog(`Google TTS (km): "${text}"`);
-            };
-
-            audio.onerror = () => {
-                addLog(`Google TTS fallback -> Local TTS: "${text}"`);
-                speakLocalFallback(text);
-            };
-
-            audio.play().catch(() => {
-                addLog(`Google TTS blocked/offline -> Local TTS: "${text}"`);
-                speakLocalFallback(text);
+            }).catch(() => {
+                addLog(`Chime & banner played for: "${text}"`);
             });
-        }
-
-        function speakLocalFallback(text) {
-            if (!("speechSynthesis" in window)) return;
-            const utterance = new SpeechSynthesisUtterance(text);
-            utterance.lang = "km-KH";
-            utterance.rate = 0.95;
-            utterance.pitch = 1.15;
-            window.speechSynthesis.speak(utterance);
         }
 
         function toggleVoice() {
@@ -482,6 +496,7 @@ basic.forever(function () {
                 }
                 icon.className = "fa-solid fa-volume-xmark";
                 label.innerText = "បិទសំឡេង";
+                showVoiceBanner("បិទសំឡេងជូនដំណឹង");
                 addLog("Voice muted.");
             }
         }
@@ -610,123 +625,110 @@ basic.forever(function () {
             }
         }
 
-        // WATER PUMP MOTOR CONTROLLER + GOOGLE KHMER VOICE
+        // WATER PUMP CONTROL & UART TRANSMIT
         function togglePumpState() {
             setPumpDirect(!pumpState);
         }
 
-        async function setPumpDirect(stateBool) {
-            pumpState = stateBool;
-            updatePumpUI(pumpState);
+        async function setPumpDirect(state) {
+            pumpState = Boolean(state);
+            const cmd = pumpState ? "RELAY1:1" : "RELAY1:0";
+            updatePumpUI(pumpState, cmd);
 
-            if (pumpState) {
-                speakKhmer("ដំណើរការបើកប្រព័ន្ធទឹក", true);
+            if (isConnected && rxCharacteristic) {
+                try {
+                    const encoder = new TextEncoder();
+                    await rxCharacteristic.writeValue(encoder.encode(cmd + "\n"));
+                    addLog("TX -> " + cmd);
+                } catch (err) {
+                    addLog("TX Error: " + err.message);
+                }
             } else {
-                speakKhmer("ដំណើរការបិទប្រព័ន្ធទឹក", false);
+                addLog("TX (Local/Sim) -> " + cmd);
             }
 
-            await sendRelayCmd(pumpState ? 1 : 0);
+            speakKhmer(
+                pumpState ? "បើកម៉ូទ័រទឹក" : "បិទម៉ូទ័រទឹក",
+                pumpState
+            );
         }
 
-        function updatePumpUI(isOn) {
-            const pumpIcon = document.getElementById("pump-icon");
-            const pumpRing = document.getElementById("pump-ring");
-            const pumpDot = document.getElementById("pump-dot");
-            const dropBadge = document.getElementById("water-drop-badge");
+        function updatePumpUI(isOn, cmd) {
+            const dot = document.getElementById("pump-dot");
+            const ring = document.getElementById("pump-ring");
+            const icon = document.getElementById("pump-icon");
+            const badge = document.getElementById("water-drop-badge");
             const statusText = document.getElementById("pump-status-text");
             const cmdLog = document.getElementById("pump-cmd-log");
-            const switchBg = document.getElementById("ios-pump-toggle");
+            const toggleBtn = document.getElementById("ios-pump-toggle");
             const knob = document.getElementById("ios-pump-knob");
             const knobIcon = document.getElementById("knob-icon");
 
+            cmdLog.innerText = `Command: ${cmd}`;
+
             if (isOn) {
-                pumpIcon.className = "fa-solid fa-fan text-5xl pump-active";
-                pumpRing.className = "w-24 h-24 rounded-full bg-sky-950/60 border border-sky-400/50 flex items-center justify-center mb-3 transition-all duration-300 relative pump-ring-active";
-                pumpDot.className = "w-2 h-2 rounded-full bg-sky-400 animate-ping";
-                dropBadge.classList.remove("hidden");
+                dot.className = "w-2 h-2 rounded-full bg-sky-400 animate-ping";
+                ring.classList.add("pump-ring-active");
+                icon.className = "fa-solid fa-fan text-5xl pump-active";
+                badge.classList.remove("hidden");
+                statusText.innerText = "ម៉ូទ័រទឹក៖ បើក (ON)";
                 statusText.className = "text-lg font-bold text-sky-300";
-                statusText.innerText = "ម៉ូទ័រទឹក៖ កំពុងដំណើរការ (ON)";
-                cmdLog.innerText = "Command: RELAY1:1";
-                switchBg.className = "w-20 h-10 rounded-full bg-sky-500 p-1 transition-colors duration-300 relative focus:outline-none shadow-inner border border-sky-400";
-                knob.className = "w-8 h-8 rounded-full bg-slate-950 shadow-md ios-switch-knob translate-x-10 flex items-center justify-center text-sky-400 text-xs";
+                toggleBtn.className = "w-20 h-10 rounded-full bg-sky-500 p-1 transition-colors duration-300 relative focus:outline-none shadow-inner border border-sky-300/30";
+                knob.className = "w-8 h-8 rounded-full bg-white shadow-md ios-switch-knob translate-x-10 flex items-center justify-center text-sky-600 text-xs";
                 knobIcon.className = "fa-solid fa-droplet";
             } else {
-                pumpIcon.className = "fa-solid fa-fan text-5xl pump-idle";
-                pumpRing.className = "w-24 h-24 rounded-full bg-slate-900/90 border border-white/10 flex items-center justify-center mb-3 transition-all duration-300 relative";
-                pumpDot.className = "w-2 h-2 rounded-full bg-slate-500";
-                dropBadge.classList.add("hidden");
-                statusText.className = "text-lg font-bold text-slate-300";
+                dot.className = "w-2 h-2 rounded-full bg-slate-500";
+                ring.classList.remove("pump-ring-active");
+                icon.className = "fa-solid fa-fan text-5xl pump-idle";
+                badge.classList.add("hidden");
                 statusText.innerText = "ម៉ូទ័រទឹក៖ បិទ (OFF)";
-                cmdLog.innerText = "Command: RELAY1:0";
-                switchBg.className = "w-20 h-10 rounded-full bg-slate-800 p-1 transition-colors duration-300 relative focus:outline-none shadow-inner border border-white/10";
+                statusText.className = "text-lg font-bold text-slate-300";
+                toggleBtn.className = "w-20 h-10 rounded-full bg-slate-800 p-1 transition-colors duration-300 relative focus:outline-none shadow-inner border border-white/10";
                 knob.className = "w-8 h-8 rounded-full bg-white shadow-md ios-switch-knob translate-x-0 flex items-center justify-center text-slate-700 text-xs";
                 knobIcon.className = "fa-solid fa-power-off";
             }
         }
 
-        async function sendRelayCmd(val) {
-            const cmd = `RELAY1:${val}\n`;
-            addLog("TX -> " + cmd.trim());
+        // DEMO SIMULATION CONTROLS
+        function toggleSimulation(enabled) {
+            isSimulating = Boolean(enabled);
+            const checkbox = document.getElementById("demo-enable-toggle");
+            if (checkbox.checked !== isSimulating) checkbox.checked = isSimulating;
 
-            if (rxCharacteristic && isConnected) {
-                try {
-                    const encoder = new TextEncoder();
-                    await rxCharacteristic.writeValue(encoder.encode(cmd));
-                } catch (err) {
-                    addLog("TX Error: " + err.message);
-                }
+            if (simInterval) {
+                clearInterval(simInterval);
+                simInterval = null;
             }
-        }
 
-        // DEMO MODE
-        function toggleSimulation(enable) {
-            isSimulating = enable;
-            document.getElementById("demo-enable-toggle").checked = enable;
-
-            if (enable) {
-                addLog("[Demo] Simulated Hardware running.");
+            if (isSimulating) {
+                addLog("Demo simulation started.");
                 updateSimData();
-                if (!simInterval) {
-                    simInterval = setInterval(() => {
-                        if (!isSimulating) return;
-                        const baseTemp = parseFloat(document.getElementById("sim-temp-input").value) || 28.5;
-                        const basePh = parseFloat(document.getElementById("sim-ph-input").value) || 7.2;
-
-                        const driftTemp = baseTemp + (Math.random() - 0.5) * 0.6;
-                        const driftPh = Math.min(14, Math.max(0, basePh + (Math.random() - 0.5) * 0.15));
-
-                        updateTempUI(driftTemp);
-                        updatePhUI(driftPh);
-                    }, 1500);
-                }
+                simInterval = setInterval(updateSimData, 2000);
             } else {
-                addLog("[Demo] Simulated Hardware stopped.");
-                if (simInterval) {
-                    clearInterval(simInterval);
-                    simInterval = null;
-                }
+                addLog("Demo simulation stopped.");
             }
         }
 
         function updateSimData() {
-            const tempVal = parseFloat(document.getElementById("sim-temp-input").value);
-            const phVal = parseFloat(document.getElementById("sim-ph-input").value);
+            const temp = parseFloat(document.getElementById("sim-temp-input").value);
+            const ph = parseFloat(document.getElementById("sim-ph-input").value);
 
-            document.getElementById("sim-temp-text").innerText = `${tempVal.toFixed(1)} °C`;
-            document.getElementById("sim-ph-text").innerText = phVal.toFixed(1);
+            document.getElementById("sim-temp-text").innerText = `${temp.toFixed(1)} °C`;
+            document.getElementById("sim-ph-text").innerText = ph.toFixed(1);
 
             if (isSimulating) {
-                updateTempUI(tempVal);
-                updatePhUI(phVal);
+                const payload = `TEMP:${temp.toFixed(1)},PH:${ph.toFixed(2)}`;
+                addLog("RX (Sim) <- " + payload);
+                parseTelemetry(payload);
             }
         }
 
         function copyMakeCode() {
-            const codeText = document.getElementById("code-snippet").innerText;
-            navigator.clipboard.writeText(codeText).then(() => {
-                addLog("Copied MakeCode snippet to clipboard!");
+            const code = document.getElementById("code-snippet").innerText;
+            navigator.clipboard?.writeText(code).then(() => {
+                addLog("MakeCode snippet copied to clipboard.");
             }).catch(() => {
-                addLog("Error copying MakeCode.");
+                addLog("Error copying MakeCode snippet.");
             });
         }
     </script>
