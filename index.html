@@ -282,7 +282,10 @@
                             <i class="fa-solid fa-terminal text-indigo-400"></i>
                             <span>Serial & Bluetooth Traffic Log</span>
                         </h3>
-                        <button onclick="clearLogs()" class="text-[10px] text-slate-400 hover:text-white underline">Clear</button>
+                        <div class="flex items-center gap-2">
+                            <button onclick="testSoundNow()" class="text-[10px] px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">Test Sound</button>
+                            <button onclick="clearLogs()" class="text-[10px] text-slate-400 hover:text-white underline">Clear</button>
+                        </div>
                     </div>
                     <div id="log-box" class="bg-black/90 rounded-2xl p-3 h-44 overflow-y-auto font-mono text-[11px] text-slate-300 space-y-1 border border-white/5">
                         <div class="text-slate-500">[Ready] micro:bit Pump Hub started.</div>
@@ -340,15 +343,34 @@ basic.forever(function () {
         const UART_TX_UUID      = "6e400002-b5a3-f393-e0a9-e50e24dcca9e";
         const UART_RX_UUID      = "6e400003-b5a3-f393-e0a9-e50e24dcca9e";
 
+        const KHMER_AUDIO_MAP = {
+            "បើកម៉ូទ័រទឹក": "098.mp3",
+            "បិទម៉ូទ័រទឹក": "Recording.mp3",
+            "ដំណើរការបើកប្រព័ន្ធទឹក": "./audio/system-on.mp3"
+        };
+
         let bleDevice = null;
         let rxCharacteristic = null;
         let isConnected = false;
         let isSimulating = false;
         let pumpState = false;
         let voiceEnabled = true;
-        let currentGoogleAudio = null;
+        let currentSpeechAudio = null;
         let uartBuffer = "";
         let simInterval = null;
+        let sharedAudioCtx = null;
+
+        function ensureAudioContext() {
+            const AudioCtx = window.AudioContext || window.webkitAudioContext;
+            if (!AudioCtx) return null;
+            if (!sharedAudioCtx) {
+                sharedAudioCtx = new AudioCtx();
+            }
+            if (sharedAudioCtx.state === "suspended") {
+                sharedAudioCtx.resume().catch(() => {});
+            }
+            return sharedAudioCtx;
+        }
 
         window.addEventListener('DOMContentLoaded', () => {
             updateClock();
@@ -356,6 +378,7 @@ basic.forever(function () {
             if ("speechSynthesis" in window) {
                 window.speechSynthesis.getVoices();
             }
+            document.addEventListener("pointerdown", ensureAudioContext, { once: true });
         });
 
         function updateClock() {
@@ -366,6 +389,7 @@ basic.forever(function () {
         }
 
         function switchTab(tabName) {
+            ensureAudioContext();
             ['dashboard', 'demo', 'logs'].forEach(t => {
                 document.getElementById(`tab-${t}`).classList.add('hidden');
                 document.getElementById(`nav-${t}`).className = "flex flex-col items-center gap-1 text-slate-500 hover:text-slate-300 transition active:scale-90";
@@ -383,7 +407,7 @@ basic.forever(function () {
             if (msg.includes("TX")) div.className = "text-sky-300";
             else if (msg.includes("RX")) div.className = "text-emerald-300";
             else if (msg.includes("Error")) div.className = "text-rose-400";
-            else if (msg.includes("TTS") || msg.includes("Voice") || msg.includes("Chime")) div.className = "text-indigo-300";
+            else if (msg.includes("TTS") || msg.includes("Voice") || msg.includes("Chime") || msg.includes("Audio") || msg.includes("MP3")) div.className = "text-indigo-300";
             else div.className = "text-slate-400";
 
             div.innerText = `[${time}] ${msg}`;
@@ -411,46 +435,35 @@ basic.forever(function () {
             }, 2200);
         }
 
-        // ALERT CHIME + KHMER VOICE / FALLBACK
+        // ALERT CHIME + KHMER MP3 / FALLBACK
         function playAlertTone(isOpen = true) {
             try {
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                const ctx = new AudioCtx();
+                const ctx = ensureAudioContext();
+                if (!ctx) return;
+
                 const osc = ctx.createOscillator();
                 const gain = ctx.createGain();
 
-                osc.type = "sine";
+                osc.type = "triangle";
                 const now = ctx.currentTime;
-                osc.frequency.setValueAtTime(isOpen ? 523.25 : 659.25, now);
-                osc.frequency.exponentialRampToValueAtTime(isOpen ? 783.99 : 392.00, now + 0.18);
+                osc.frequency.setValueAtTime(isOpen ? 587.33 : 659.25, now);
+                osc.frequency.exponentialRampToValueAtTime(isOpen ? 880.00 : 392.00, now + 0.22);
 
-                gain.gain.setValueAtTime(0.2, now);
-                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+                gain.gain.setValueAtTime(0.45, now);
+                gain.gain.exponentialRampToValueAtTime(0.001, now + 0.45);
 
                 osc.connect(gain);
                 gain.connect(ctx.destination);
 
                 osc.start(now);
-                osc.stop(now + 0.36);
-                setTimeout(() => ctx.close(), 500);
-            } catch (e) {}
+                osc.stop(now + 0.46);
+                addLog(`Audio Chime played (state: ${ctx.state})`);
+            } catch (e) {
+                addLog("Audio Chime Error: " + e.message);
+            }
         }
 
-        function speakKhmer(text, isOpen = true) {
-            if (!voiceEnabled) return;
-
-            if (currentGoogleAudio) {
-                currentGoogleAudio.pause();
-                currentGoogleAudio.currentTime = 0;
-                currentGoogleAudio = null;
-            }
-            if ("speechSynthesis" in window) {
-                try { window.speechSynthesis.cancel(); } catch (e) {}
-            }
-
-            playAlertTone(isOpen);
-            showVoiceBanner(text);
-
+        function tryBrowserKhmerTts(text, fromMp3Fail) {
             if ("speechSynthesis" in window) {
                 const voices = window.speechSynthesis.getVoices();
                 const khmerVoice = voices.find(v => v.lang && v.lang.toLowerCase().startsWith("km"));
@@ -465,19 +478,52 @@ basic.forever(function () {
                 }
             }
 
-            const googleTtsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=km&q=${encodeURIComponent(text)}`;
-            const audio = new Audio(googleTtsUrl);
-            audio.volume = 1.0;
-            currentGoogleAudio = audio;
+            if (fromMp3Fail) {
+                addLog(`MP3 not found/blocked for "${text}". Add file to /audio/ on GitHub.`);
+            } else {
+                addLog(`No km-KH voice on this device for "${text}" (Chime played).`);
+            }
+        }
 
-            audio.play().then(() => {
-                addLog(`Google TTS (km): "${text}"`);
-            }).catch(() => {
-                addLog(`Chime & banner played for: "${text}"`);
-            });
+        function speakKhmer(text, isOpen = true) {
+            if (!voiceEnabled) return;
+
+            if (currentSpeechAudio) {
+                currentSpeechAudio.pause();
+                currentSpeechAudio.currentTime = 0;
+                currentSpeechAudio = null;
+            }
+            if ("speechSynthesis" in window) {
+                try { window.speechSynthesis.cancel(); } catch (e) {}
+            }
+
+            playAlertTone(isOpen);
+            showVoiceBanner(text);
+
+            const mp3Path = KHMER_AUDIO_MAP[text];
+            if (mp3Path) {
+                const audio = new Audio(mp3Path);
+                audio.volume = 1.0;
+                currentSpeechAudio = audio;
+
+                audio.play().then(() => {
+                    addLog(`MP3 played: "${text}" (${mp3Path})`);
+                }).catch(() => {
+                    tryBrowserKhmerTts(text, true);
+                });
+                return;
+            }
+
+            tryBrowserKhmerTts(text, false);
+        }
+
+        function testSoundNow() {
+            ensureAudioContext();
+            speakKhmer("បើកម៉ូទ័រទឹក", true);
         }
 
         function toggleVoice() {
+            ensureAudioContext();
             voiceEnabled = !voiceEnabled;
             const icon = document.getElementById("voice-icon");
             const label = document.getElementById("voice-label");
@@ -487,9 +533,9 @@ basic.forever(function () {
                 label.innerText = "សំឡេង";
                 speakKhmer("ដំណើរការបើកប្រព័ន្ធទឹក", true);
             } else {
-                if (currentGoogleAudio) {
-                    currentGoogleAudio.pause();
-                    currentGoogleAudio = null;
+                if (currentSpeechAudio) {
+                    currentSpeechAudio.pause();
+                    currentSpeechAudio = null;
                 }
                 if ("speechSynthesis" in window) {
                     try { window.speechSynthesis.cancel(); } catch (e) {}
@@ -503,6 +549,7 @@ basic.forever(function () {
 
         // WEB BLUETOOTH CONNECT / DISCONNECT
         async function toggleBluetoothConnection() {
+            ensureAudioContext();
             if (isConnected && bleDevice && bleDevice.gatt.connected) {
                 bleDevice.gatt.disconnect();
                 return;
@@ -631,6 +678,7 @@ basic.forever(function () {
         }
 
         async function setPumpDirect(state) {
+            ensureAudioContext();
             pumpState = Boolean(state);
             const cmd = pumpState ? "RELAY1:1" : "RELAY1:0";
             updatePumpUI(pumpState, cmd);
@@ -691,6 +739,7 @@ basic.forever(function () {
 
         // DEMO SIMULATION CONTROLS
         function toggleSimulation(enabled) {
+            ensureAudioContext();
             isSimulating = Boolean(enabled);
             const checkbox = document.getElementById("demo-enable-toggle");
             if (checkbox.checked !== isSimulating) checkbox.checked = isSimulating;
